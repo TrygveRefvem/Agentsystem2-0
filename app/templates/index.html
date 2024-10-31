@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agentsystem 2.0</title>
+    <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+    <link rel="stylesheet" href="/static/css/main.css">
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <div class="container mx-auto px-4 py-8 max-w-5xl">
+        <h1 class="text-3xl font-bold text-center mb-8 text-gray-800">Agentsystem 2.0</h1>
+        
+        <!-- Query Input -->
+        <div class="mb-8 bg-white rounded-lg shadow-md p-6">
+            <textarea 
+                id="queryInput"
+                class="w-full p-4 border rounded-lg shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 min-h-[120px] text-gray-700"
+                placeholder="Skriv ditt spørsmål her..."
+            ></textarea>
+            <button 
+                id="submitQuery"
+                class="mt-4 px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+            >Send Spørsmål</button>
+        </div>
+
+        <!-- Progress Status -->
+        <div id="progressStatus" class="mb-8 hidden">
+            <div class="bg-white rounded-lg shadow-md p-4">
+                <div class="flex items-center gap-3">
+                    <div class="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-500"></div>
+                    <span id="progressText" class="text-blue-600 font-medium"></span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Agent Selection -->
+        <div id="suggestedAgentsContainer" class="mb-8 hidden">
+            <div class="bg-white rounded-lg shadow-md p-6">
+                <h2 class="text-xl font-semibold mb-4">Velg Agenter:</h2>
+                <div id="agentList" class="grid gap-4 md:grid-cols-2 lg:grid-cols-3"></div>
+                <div class="mt-6 flex justify-between items-center">
+                    <button 
+                        id="toggleAllAgents" 
+                        class="px-4 py-2 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200"
+                    >Velg Alle</button>
+                    <button 
+                        id="continueWithAgents" 
+                        class="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                        disabled
+                    >Fortsett med Valgte Agenter</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Dialogue Display -->
+        <div id="dialogueContainer" class="space-y-6"></div>
+    </div>
+
+    <script>
+        let ws;
+        let selectedAgents = new Set();
+        let currentQuery = '';
+        
+        function connectWebSocket() {
+            ws = new WebSocket(`ws://${window.location.host}/ws`);
+            
+            ws.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                console.log('Received:', data.type);
+                handleWebSocketMessage(data);
+            };
+            
+            ws.onclose = function() {
+                setTimeout(connectWebSocket, 1000);
+            };
+        }
+        
+        connectWebSocket();
+
+        document.getElementById('submitQuery').addEventListener('click', function() {
+            const query = document.getElementById('queryInput').value.trim();
+            if (!query) return;
+            
+            currentQuery = query;
+            selectedAgents.clear();
+            
+            // Reset UI
+            document.getElementById('suggestedAgentsContainer').classList.add('hidden');
+            document.getElementById('dialogueContainer').innerHTML = '';
+            
+            // Show progress
+            const progressStatus = document.getElementById('progressStatus');
+            const progressText = document.getElementById('progressText');
+            progressStatus.classList.remove('hidden');
+            progressText.textContent = 'Analyserer spørsmål...';
+            
+            // Send query
+            ws.send(JSON.stringify({ query: query }));
+        });
+
+        // Updated agent selection handling
+        document.addEventListener('click', function(e) {
+            if (e.target.matches('#agentList input[type="checkbox"]')) {
+                const agentId = e.target.value;
+                if (e.target.checked) {
+                    selectedAgents.add(agentId);
+                } else {
+                    selectedAgents.delete(agentId);
+                }
+                
+                updateContinueButton();
+            }
+        });
+
+        document.getElementById('toggleAllAgents').addEventListener('click', function() {
+            const checkboxes = document.querySelectorAll('#agentList input[type="checkbox"]');
+            const isSelectAll = this.textContent === 'Velg Alle';
+            
+            checkboxes.forEach(checkbox => {
+                checkbox.checked = isSelectAll;
+                if (isSelectAll) {
+                    selectedAgents.add(checkbox.value);
+                } else {
+                    selectedAgents.delete(checkbox.value);
+                }
+            });
+            
+            this.textContent = isSelectAll ? 'Velg Ingen' : 'Velg Alle';
+            updateContinueButton();
+        });
+
+        function updateContinueButton() {
+            const continueButton = document.getElementById('continueWithAgents');
+            continueButton.disabled = selectedAgents.size < 2;
+            console.log('Selected agents:', selectedAgents.size);
+        }
+
+        document.getElementById('continueWithAgents').addEventListener('click', function() {
+            if (selectedAgents.size < 2) return;
+            
+            // Hide agent selection
+            document.getElementById('suggestedAgentsContainer').classList.add('hidden');
+            
+            // Show progress
+            const progressStatus = document.getElementById('progressStatus');
+            const progressText = document.getElementById('progressText');
+            progressStatus.classList.remove('hidden');
+            progressText.textContent = 'Starter agent-diskusjon...';
+
+            // Send selected agents
+            console.log('Sending continue request with agents:', Array.from(selectedAgents));
+            ws.send(JSON.stringify({
+                type: 'continue_dialogue',
+                agents: Array.from(selectedAgents),
+                query: currentQuery
+            }));
+        });
+
+        function handleWebSocketMessage(data) {
+            const progressStatus = document.getElementById('progressStatus');
+            const progressText = document.getElementById('progressText');
+            
+            switch(data.type) {
+                case 'suggested_agents':
+                    console.log('Displaying agents:', data.agents);
+                    displayAgents(data.agents);
+                    progressStatus.classList.add('hidden');
+                    break;
+                    
+                case 'dialogue_update':
+                    if (data.data.some(entry => entry.type === 'consensus')) {
+                        progressStatus.classList.add('hidden');
+                    } else {
+                        progressText.textContent = 'Behandler agent-svar...';
+                    }
+                    displayDialogue(data.data);
+                    break;
+                    
+                case 'error':
+                    progressText.textContent = data.message;
+                    progressStatus.classList.remove('hidden');
+                    setTimeout(() => progressStatus.classList.add('hidden'), 5000);
+                    break;
+            }
+        }
+
+        function displayAgents(agents) {
+            const container = document.getElementById('suggestedAgentsContainer');
+            const list = document.getElementById('agentList');
+            
+            list.innerHTML = agents.map(agent => `
+                <div class="agent-card p-4 rounded-lg border hover:shadow-md transition-shadow">
+                    <div class="flex items-start space-x-3">
+                        <input type="checkbox" value="${agent.role}" class="mt-1">
+                        <div>
+                            <h3 class="font-medium text-gray-800">${agent.role}</h3>
+                            <p class="text-sm text-gray-600 mt-1">${agent.description}</p>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+            
+            selectedAgents.clear();
+            updateContinueButton();
+            container.classList.remove('hidden');
+        }
+
+        function displayDialogue(dialogueState) {
+            const container = document.getElementById('dialogueContainer');
+            
+            container.innerHTML = dialogueState.map(entry => {
+                let headerClass = 'text-gray-700';
+                let cardClass = 'bg-white';
+                
+                if (entry.type === 'consensus') {
+                    headerClass = 'text-green-700 font-semibold';
+                    cardClass = 'bg-green-50';
+                } else if (entry.type === 'initial-response') {
+                    cardClass = 'bg-blue-50';
+                } else if (entry.type === 'response-to-response') {
+                    cardClass = 'bg-purple-50';
+                }
+                
+                return `
+                    <div class="${cardClass} rounded-lg shadow-md p-6 agent-response fade-in">
+                        <h3 class="${headerClass} mb-2 text-lg">${entry.agent}</h3>
+                        <div class="prose text-gray-600 markdown-content max-w-none">
+                            ${entry.content}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+    </script>
+</body>
+</html>
